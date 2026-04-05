@@ -1,0 +1,184 @@
+{
+  "artifact_counts": {
+    "event_count": 348,
+    "frame_count": 43,
+    "report_count": 35
+  },
+  "final_event_index": 347,
+  "final_frame_index": 42,
+  "program_terminal_summaries": [],
+  "reported_metrics": {
+    "commercially_weak_approval_count": 0,
+    "primary_score": 0.0,
+    "successful_phase2_count": 0,
+    "successful_phase3_count": 0,
+    "terminal_portfolio_status": "time_budget_reached",
+    "time_to_first_approval": null,
+    "total_IND_filings": 0,
+    "total_NDA_submissions": 0,
+    "total_approvals": 0,
+    "total_cost_spent": 103459677.4785626,
+    "total_elapsed_months": 120
+  },
+  "run_end_reason": "time_budget_reached",
+  "terminal_portfolio_state": {
+    "active_program_ids": [
+      "prog-0001"
+    ],
+    "cash_on_hand": 346540322.5214374,
+    "elapsed_months": 120,
+    "in_progress_events": [],
+    "max_parallel_programs": 3,
+    "paused_program_ids": [],
+    "program_summaries": [
+      {
+        "active_candidate_id": "cmpd-0003",
+        "active_indication": "target_enriched_population",
+        "allocated_budget": 36540322.52143739,
+        "blocking_issues": [
+          "nonclinical_safety_not_acceptable"
+        ],
+        "gate_status": {
+          "can_file_IND": false,
+          "can_mark_preclinical_ready": false,
+          "can_nominate_candidate": false,
+          "can_start_phase1": false,
+          "can_start_phase2": false,
+          "can_start_phase3": false,
+          "can_submit_NDA": false
+        },
+        "in_progress_work_count": 0,
+        "operating_status": "active",
+        "program_id": "prog-0001",
+        "stage": "development_candidate"
+      }
+    ],
+    "reported_metrics": {
+      "commercially_weak_approval_count": 0,
+      "primary_score": 0.0,
+      "successful_phase2_count": 0,
+      "successful_phase3_count": 0,
+      "terminal_portfolio_status": "time_budget_reached",
+      "time_to_first_approval": null,
+      "total_IND_filings": 0,
+      "total_NDA_submissions": 0,
+      "total_approvals": 0,
+      "total_cost_spent": 103459677.4785626,
+      "total_elapsed_months": 120
+    },
+    "time_budget_months": 120,
+    "unallocated_cash": 310000000.0,
+    "visible_opportunities": [
+      {
+        "indication_hypotheses": [
+          "neurology",
+          "pain"
+        ],
+        "modality": "antibody",
+        "observable_risk_hints": {
+          "biology": "low",
+          "chemistry": "low",
+          "commercial": "medium",
+          "operations": "low",
+          "translation": "low"
+        },
+        "opportunity_id": "opp-002",
+        "priority_tier": "attractive",
+        "target_class": "ion_channel",
+        "tractability_notes": [
+          "ion_channel program with antibody tractability profile",
+          "observable chemistry burden looks low",
+          "translation burden looks low"
+        ]
+      },
+      {
+        "indication_hypotheses": [
+          "pulmonary_disease",
+          "pain"
+        ],
+        "modality": "peptide",
+        "observable_risk_hints": {
+          "biology": "low",
+          "chemistry": "low",
+          "commercial": "low",
+          "operations": "medium",
+          "translation": "low"
+        },
+        "opportunity_id": "opp-003",
+        "priority_tier": "attractive",
+        "target_class": "gpcr",
+        "tractability_notes": [
+          "gpcr program with peptide tractability profile",
+          "observable chemistry burden looks low",
+          "translation burden looks low"
+        ]
+      },
+      {
+        "indication_hypotheses": [
+          "pain",
+          "metabolic_disease"
+        ],
+        "modality": "peptide",
+        "observable_risk_hints": {
+          "biology": "low",
+          "chemistry": "medium",
+          "commercial": "low",
+          "operations": "low",
+          "translation": "medium"
+        },
+        "opportunity_id": "opp-004",
+        "priority_tier": "attractive",
+        "target_class": "gpcr",
+        "tractability_notes": [
+          "gpcr program with peptide tractability profile",
+          "observable chemistry burden looks medium",
+          "translation burden looks medium"
+        ]
+      },
+      {
+        "indication_hypotheses": [
+          "pain",
+          "pulmonary_disease"
+        ],
+        "modality": "antibody",
+        "observable_risk_hints": {
+          "biology": "medium",
+          "chemistry": "low",
+          "commercial": "low",
+          "operations": "low",
+          "translation": "medium"
+        },
+        "opportunity_id": "opp-005",
+        "priority_tier": "balanced",
+        "target_class": "gpcr",
+        "tractability_notes": [
+          "gpcr program with antibody tractability profile",
+          "observable chemistry burden looks low",
+          "translation burden looks medium"
+        ]
+      },
+      {
+        "indication_hypotheses": [
+          "pulmonary_disease",
+          "pain"
+        ],
+        "modality": "small_molecule",
+        "observable_risk_hints": {
+          "biology": "low",
+          "chemistry": "low",
+          "commercial": "low",
+          "operations": "low",
+          "translation": "low"
+        },
+        "opportunity_id": "opp-006",
+        "priority_tier": "attractive",
+        "target_class": "gpcr",
+        "tractability_notes": [
+          "gpcr program with small_molecule tractability profile",
+          "observable chemistry burden looks low",
+          "translation burden looks low"
+        ]
+      }
+    ]
+  }
+}

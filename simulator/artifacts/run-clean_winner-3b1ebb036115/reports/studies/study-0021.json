@@ -1,0 +1,15 @@
+{
+  "candidate_id": "cmpd-0003",
+  "findings": [
+    "biomarker_validation_completed"
+  ],
+  "month": 77,
+  "parameters": {
+    "assay": "circulating_marker"
+  },
+  "program_id": "prog-0001",
+  "recommended_dose_supported": false,
+  "study_id": "study-0021",
+  "study_type": "biomarker_validation",
+  "summary": "biomarker_validation completed for cmpd-0003"
+}

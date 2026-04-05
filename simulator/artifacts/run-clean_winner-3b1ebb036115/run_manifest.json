@@ -1,0 +1,22 @@
+{
+  "artifact_files": {
+    "event_log": "event_log.ndjson",
+    "final_summary": "final_summary.json",
+    "reports": [],
+    "timeline_frames": "timeline_frames.ndjson"
+  },
+  "artifact_schema_version": "1.0.0",
+  "initial_portfolio_config": {
+    "artifact_root": null,
+    "initial_cash": 450000000.0,
+    "max_parallel_programs": 3,
+    "scenario_preset": "clean_winner",
+    "seed": 7,
+    "time_budget_months": 120,
+    "visible_opportunity_pool_size": 5
+  },
+  "rng_seed": 7,
+  "run_id": "run-clean_winner-3b1ebb036115",
+  "scenario_preset": "clean_winner",
+  "spec_version": "0.1.0"
+}

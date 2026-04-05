@@ -1,0 +1,30 @@
+{
+  "adme_summaries": {
+    "bioavailability_support": 0.8827395267018762,
+    "clearance_risk": 0.22457885290155222
+  },
+  "biomarker_tractability_notes": {
+    "observable_signal": 0.663707923700345,
+    "strategy": {
+      "validated": false
+    }
+  },
+  "candidate_id": "cmpd-0003",
+  "efficacy_model_outputs": {
+    "model_signal_strength": 0.5549480574669705,
+    "species_translatability": 0.6598313724014055
+  },
+  "formulation_process_notes": {
+    "formulation_score": 0.6265619609188995,
+    "manufacturing_status": "acceptable"
+  },
+  "month": 20,
+  "package_type": "IND_enabling",
+  "program_id": "prog-0001",
+  "study_id": "study-0002",
+  "summary": "IND_enabling package completed for cmpd-0003",
+  "tox_findings": {
+    "nonclinical_safety_status": "concern",
+    "safety_score": 0.4770765675788999
+  }
+}
