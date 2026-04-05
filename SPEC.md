@@ -2,187 +2,201 @@
 
 ## Purpose
 
-This simulator is intended to explore what happens if an autonomous AI agent is tasked with optimizing the entire drug development pipeline, from early discovery to phase III deployment, autoresearch style. To simulate this, we need to simulate the decisions that such a system would take to generate hits, leads, optimize them medicinally and toxicologically, and shepherd them through clinical trial for effectiveness. 
+This spec defines a toy but implementation-ready simulator for portfolio-level drug development under uncertainty. The simulator is meant to support an external autonomous agent that allocates capital, gathers evidence, advances programs, and decides when to stop.
 
-The simulator models a full program with the ability to spawn new assets and progressing them from discovery through regulatory submission. It must support sequential decision-making by an external agent through a constrained tool API that resembles decisions and tasks that would be taken by an omni drug development overseer. The agent should not have access to hidden ground truth; it only observes study outputs, trial outcomes, program state, and selected regulatory/strategic feedback. The success of each decision in the environment is dictated by probabilities calibrated by success probabilities of each step according to general knowledge/the literature 
+The simulator itself is the product of this spec. The agent that uses it lives elsewhere.
 
-The simulator should be implemented as a partially observable Markov decision process with explicit action preconditions, state transitions, observation functions, and terminal conditions. Note that this spec is for the simulator itself, including state definitions, and the tool API given to the agent. The agent itself will be implemented elsewhere.
-
----
-
-## 1. Formalism
-
-### 1.1 Core model
-
-Represent the environment as a POMDP:
-
-* Hidden state `H_t`: latent biological, chemical, translational, clinical, regulatory, and economic truth at time `t`
-* Observable state `O_t`: current program dashboard, completed studies, generated reports, stage, cash, elapsed time, candidate profile, trial results, known findings
-* Action `A_t`: one permitted tool invocation, each action has a cost `C(A_t)` associated to it
-* Transition function `T(H_t, O_t, A_t) -> H_{t+1}, O_{t+1}`
-* Observation function `G(H_{t+1}, A_t) -> delta_observation`
-* Budget `B` for spending
-* Time budget `T_max` in months — the simulation ends when `elapsed_months >= T_max`
-* Reward `R = N_approved / C_total` where `N_approved` is the number of drugs approved and `C_total` is the total cost expended across all programs. Total elapsed time is a secondary endpoint
-
-The Markov property should hold over the full simulator state. That means all future evolution must depend only on the current internal state and the chosen action. However, the agent itself could very well store memory and use it for its decisions, only the simulator is strictly Markovian. 
-Additionally, the Markovian property might break for the success probabilities themselves in case the agent decides to e.g. skip a section (see section below on Soft dependencies)
-
-### 1.2 Design philosophy
-
-All uncertainty should be tied to interpretable latent variables. Experimental and trial outputs should be noisy but with a non-negligent probability of being informative. The same hidden causes should influence multiple downstream observations.
-
-Example: a low hidden translatability parameter should simultaneously degrade animal-to-human predictiveness, biomarker informativeness, and expected patient-level efficacy stability.
-
----
-
-## 2. Stage Graph and Markov Dependencies
-
-The program stage is itself a state variable:
+The benchmark is not RL-first. It should expose a rich state/action loop, clear logs, and multiple reported outcome metrics. The primary north-star score remains:
 
 ```text
-idea -> hit_series -> lead_series -> development_candidate -> preclinical_ready -> IND_cleared -> phase1_in_progress -> phase1_complete -> phase2_in_progress -> phase2_complete -> phase3_in_progress -> phase3_complete -> submitted -> approved | failed | terminated
+N_approved / C_total
 ```
 
-Transitions from `phaseX_in_progress` to `phaseX_complete` are triggered automatically by the simulator when the trial duration elapses, not by agent action.
-
-Not every program must pass through every stage in the same way, but the following dependencies must be enforced.
-
-### 2.1 Hard stage preconditions
-
-`optimize_candidate()` requires:
-
-* stage in `{hit_series, lead_series}`
-* at least one active series or candidate object
-
-`generate_preclinical_evidence(package_type='exploratory')` requires:
-
-* stage in `{hit_series, lead_series}`
-* candidate or series exists
-
-`generate_preclinical_evidence(package_type='IND-enabling')` requires:
-
-* stage == `development_candidate`
-* nominated candidate exists
-* indication selected
-
-`choose_indication()` requires:
-
-* stage in `{lead_series, development_candidate}`
-* candidate exists
-
-`nominate_candidate()` requires:
-
-* stage == `lead_series`
-* candidate profile above minimum thresholds
-* minimum evidence package complete
-
-`advance_program(action='preclinical_ready')` requires:
-
-* stage == `development_candidate`
-* IND-enabling package complete
-* formulation status not failed
-* manufacturability status not failed
-
-`advance_program(action='file_IND')` requires:
-
-* stage == `preclinical_ready`
-* IND-enabling package complete
-* starting dose rationale exists
-* first-in-human protocol draft exists
-* sufficient cash
-
-`advance_program(action='start_phase1')` requires:
-
-* stage == `IND_cleared`
-* phase I trial design exists
-* sufficient cash
-
-`advance_program(action='start_phase2')` requires:
-
-* stage == `phase1_complete`
-* phase II trial design exists
-* recommended dose exists
-* sufficient cash
-
-`advance_program(action='start_phase3')` requires:
-
-* stage == `phase2_complete`
-* phase III trial design exists
-* pivotal indication locked
-* sufficient cash
-
-`advance_program(action='submit_NDA')` requires:
-
-* stage == `phase3_complete`
-* at least one successful pivotal package or acceptable surrogate package
-* CMC acceptable
-* safety database acceptable
-* sufficient cash
-
-Once terminal stage in `{approved, failed, terminated}` is reached, only `get_program_state()` is allowed.
-
-The entire simulation also terminates when `elapsed_months >= time_budget_months`. Any in-progress trials at that point are abandoned, and only approvals achieved before the deadline count toward the reward.
-
-### 2.2 Soft dependencies
-
-The simulator should also model practical dependencies that are not binary blockers but affect downstream probabilities and interpretability.
-
-Examples:
-
-* Advancing without a biomarker strategy decreases downstream interpretability.
-* Choosing a broad patient population lowers expected effect size if responder fraction is low.
-* Weak formulation quality increases delay and failure risk during preclinical and later manufacturing review.
-* Weak Phase I PK/PD evidence increases Phase II dose miss probability.
+where `N_approved` is the number of approved programs before the time budget expires and `C_total` is total cash spent across the whole portfolio.
 
 ---
 
-## 3. Portfolio-level branching requirement
+## 1. Simulator Contract
 
-The simulator must not present a single obvious next action at each stage. At any nonterminal step, the agent should face a menu of mutually competing capital-allocation choices, including within-program actions, cross-program actions, and portfolio resets.
+Represent the environment as a partially observable Markov decision process.
 
-The environment should support at least these action classes:
+### 1.1 State decomposition
 
-* continue investing in the current program
-* pause the current program and gather more evidence
-* terminate the current program
-* launch a new program from a fresh idea or target class
-* run two programs in parallel if cash permits
-* partner one program to extend runway for another
-* narrow one program's scope to preserve optionality elsewhere
+The full Markov state at time `t` is:
 
-This is essential because real R&D optimization is not just local hill climbing inside one drug. It is constrained portfolio management under uncertainty.
-
-Accordingly, the simulator state must support multiple concurrent programs and a global budget. The agent's problem is therefore:
-
-1. choose which program(s) exist
-2. choose which program gets marginal dollars and time
-3. choose which experiment or stage-advance action to fund next
-
-This should generally make clear that there is a trade-off between “push the current lead forward,” and “kill or pause this one and reallocate capital to a second asset with better expected information-adjusted value.”
-
-## 4. Hidden State Variables
-
-All hidden variables should be initialized at program start and evolve only where appropriate.
-
-### 4.1 Biology
-
-```python
-biology = {
-    "target_validity": float,            # causal relevance of target to disease, 0-1
-    "pathway_redundancy": float,         # higher means compensation suppresses efficacy
-    "species_translatability": float,    # predictiveness of animal models to human biology
-    "responder_fraction": float,         # true fraction of patients with meaningful response
-    "effect_size_base": float,           # expected efficacy in ideal responder under ideal exposure
-    "disease_heterogeneity": float,      # broader variance across patient subtypes
-    "biomarker_observability": float,    # ability to measure target engagement / predictive signal
-    "disease_progression_rate": float    # relevant to event rates and endpoint sensitivity
+```text
+S_t = {
+    portfolio_resources,
+    programs,
+    visible_opportunity_pool,
+    hidden_program_states,
+    event_queue,
+    rng_state
 }
 ```
 
-### 4.2 Molecule / candidate
+The agent only observes the observable portfolio state, observable program states, visible opportunities, completed outputs, and action availability summaries.
+
+### 1.2 Hidden and observable slices
+
+* Hidden state: biological, chemical, translational, clinical, regulatory, and commercial truth
+* Observable state: portfolio cash, program summaries, visible opportunities, study outputs, trial designs, trial results, gate flags, blocking issues, and in-progress work summaries
+* Action: one permitted API call
+* Observation: the response from that API call, plus any completion outputs generated by `advance_time(...)`
+
+### 1.3 Markov property
+
+The simulator must remain Markovian. If skipping work should hurt later performance, that penalty must be encoded in the current state through missing evidence, stale evidence, unresolved blockers, invalidated designs, or weakened gate flags. The simulator must not rely on untracked historical exceptions.
+
+### 1.4 Terminal conditions
+
+The whole simulation terminates when any of the following is true:
+
+* `elapsed_months >= time_budget_months`
+* there are no legal state-changing actions remaining and the event queue is empty
+* the portfolio has no cash, no in-progress work, and no launchable opportunities
+
+When the global time budget is reached, unfinished work is abandoned and produces no further observations. Costs already spent remain spent.
+
+After environment termination, only read actions are valid:
+
+* `get_portfolio_state()`
+* `get_program_state(program_id)`
+* `get_available_actions(...)`
+
+---
+
+## 2. Lifecycle And Execution Model
+
+### 2.1 Program lifecycle stage
+
+Each program has exactly one lifecycle `stage`:
 
 ```python
+STAGES = [
+    "hit_series",
+    "lead_series",
+    "development_candidate",
+    "preclinical_ready",
+    "ind_under_review",
+    "IND_cleared",
+    "phase1_in_progress",
+    "phase1_complete",
+    "phase2_in_progress",
+    "phase2_complete",
+    "phase3_in_progress",
+    "phase3_complete",
+    "nda_under_review",
+    "approved",
+    "failed",
+    "terminated",
+]
+```
+
+`approved`, `failed`, and `terminated` are terminal stages.
+
+Programs do not begin at `idea`. Opportunity generation happens before program launch. `launch_program(...)` creates a program directly at `hit_series`.
+
+### 2.2 Operating status
+
+Use a separate `operating_status` field with non-overlapping meaning:
+
+```python
+OPERATING_STATUS = ["active", "paused", None]
+```
+
+Rules:
+
+* nonterminal programs have `operating_status in {"active", "paused"}`
+* terminal programs have `operating_status is None`
+* paused programs keep their stage; they are not terminal
+
+### 2.3 Allowed stage transitions
+
+```python
+ALLOWED_STAGE_TRANSITIONS = {
+    "hit_series": ["lead_series", "terminated"],
+    "lead_series": ["development_candidate", "terminated"],
+    "development_candidate": ["preclinical_ready", "terminated", "failed"],
+    "preclinical_ready": ["ind_under_review", "terminated", "failed"],
+    "ind_under_review": ["IND_cleared", "failed"],
+    "IND_cleared": ["phase1_in_progress", "terminated", "failed"],
+    "phase1_in_progress": ["phase1_complete", "failed", "terminated"],
+    "phase1_complete": ["phase2_in_progress", "terminated", "failed"],
+    "phase2_in_progress": ["phase2_complete", "failed", "terminated"],
+    "phase2_complete": ["phase3_in_progress", "terminated", "failed"],
+    "phase3_in_progress": ["phase3_complete", "failed", "terminated"],
+    "phase3_complete": ["nda_under_review", "terminated", "failed"],
+    "nda_under_review": ["approved", "failed"],
+    "approved": [],
+    "failed": [],
+    "terminated": [],
+}
+```
+
+### 2.4 Instant vs scheduled actions
+
+The public API contains two action classes.
+
+`instant` actions:
+
+* resolve immediately
+* do not create background work
+* may update state and may charge small fixed fees
+* do not advance `elapsed_months`
+
+`scheduled` actions:
+
+* create a `WorkItem` in the event queue
+* reserve and spend cost immediately
+* sample or compute an end month immediately
+* produce their substantive observation only when completed by `advance_time(...)`
+
+### 2.5 Time progression
+
+Time advances only through:
+
+* `advance_time(months=...)`
+* `advance_time(to_next_event=True)`
+
+There are no explicit `complete_phase1`, `complete_phase2`, or `complete_phase3` actions.
+
+### 2.6 Parallelism rules
+
+Across programs:
+
+* any number of work items may run in parallel, subject to cash and `max_parallel_programs`
+
+Within a single program:
+
+* at most one `discovery_or_preclinical` work item may be active at once
+* at most one `clinical_or_regulatory` work item may be active at once
+* one `discovery_or_preclinical` item may overlap with one `clinical_or_regulatory` item if all preconditions were satisfied when both were created
+
+`pause_program(...)` does not cancel in-flight work. It only blocks new non-read actions for that program until resumed.
+
+`terminate_program(...)` cancels all in-flight work for that program immediately. Canceled work produces no further observations. Unspent allocated budget returns to the portfolio cash pool.
+
+---
+
+## 3. State Model
+
+### 3.1 Hidden program state
+
+All hidden variables are sampled when a program is launched from an opportunity and remain internal.
+
+```python
+biology_hidden = {
+    "target_validity": float,
+    "pathway_redundancy": float,
+    "species_translatability": float,
+    "responder_fraction": float,
+    "effect_size_base": float,
+    "disease_heterogeneity": float,
+    "biomarker_observability": float,
+    "disease_progression_rate": float,
+}
+
 candidate_hidden = {
     "potency_true": float,
     "selectivity_true": float,
@@ -195,13 +209,9 @@ candidate_hidden = {
     "formulation_risk": float,
     "polymorph_risk": float,
     "process_risk": float,
-    "dose_response_slope": float
+    "dose_response_slope": float,
 }
-```
 
-### 4.3 Clinical / operational
-
-```python
 clinical_hidden = {
     "placebo_noise": float,
     "dropout_risk": float,
@@ -209,399 +219,498 @@ clinical_hidden = {
     "adherence_risk": float,
     "exposure_variability": float,
     "background_soc_effect": float,
-    "safety_event_rate": float
+    "safety_event_rate": float,
 }
-```
 
-### 4.4 Regulatory / commercial
-
-```python
 strategic_hidden = {
     "regulatory_strictness": float,
     "surrogate_acceptance": float,
     "market_size_base": float,
     "payer_stringency": float,
-    "competitive_pressure": float
+    "competitive_pressure": float,
 }
 ```
 
-### 4.5 Resource state
-
-These are observable but part of the Markov state.
-
-```python
-resources = {
-    "cash": float,
-    "elapsed_months": int,
-    "time_budget_months": int,
-    "burn_rate": float
-}
-```
-
----
-
-## 5. Observable State
-
-The observable state should exist at both portfolio and program levels.
+### 3.2 Portfolio observable state
 
 ```python
 portfolio_observable_state = {
-    "cash": float,
+    "cash_on_hand": float,          # all remaining cash, allocated + unallocated
+    "unallocated_cash": float,      # cash not currently assigned to any program
     "elapsed_months": int,
-    "program_summaries": list[ProgramSummary],
-    "active_program_ids": list[str],
+    "time_budget_months": int,
     "max_parallel_programs": int,
-    "capital_market_access_state": str
+    "program_summaries": list["ProgramSummary"],
+    "active_program_ids": list[str],
+    "paused_program_ids": list[str],
+    "visible_opportunities": list["OpportunityBrief"],
+    "in_progress_events": list["EventSummary"],
+    "reported_metrics": dict,
 }
 ```
 
-Each `ProgramSummary` should include the program-local observable state described below.
+Invariant:
+
+```text
+cash_on_hand = unallocated_cash + sum(program.allocated_budget for each nonterminal program)
+```
+
+### 3.3 Opportunity pool
+
+The launch surface is an opportunity deck, not free-form program labels.
 
 ```python
-observable_state = {
+OpportunityBrief = {
+    "opportunity_id": str,
+    "target_class": str,
+    "modality": str,
+    "tractability_notes": list[str],
+    "indication_hypotheses": list[str],
+    "observable_risk_hints": {
+        "biology": str,      # low / medium / high
+        "chemistry": str,
+        "translation": str,
+        "operations": str,
+        "commercial": str,
+    },
+    "priority_tier": str,    # speculative / balanced / attractive
+}
+```
+
+Rules:
+
+* reset creates a fixed-size visible opportunity pool, default size `5`
+* each opportunity maps to a structured hidden prior family
+* launching an opportunity removes it permanently from the pool
+* the simulator immediately samples one replacement opportunity so the pool stays at fixed visible size
+
+### 3.4 Program observable state
+
+```python
+program_observable_state = {
+    "program_id": str,
+    "source_opportunity_id": str,
+    "target_class": str,
+    "modality": str,
     "stage": str,
-    "cash": float,
-    "elapsed_months": int,
+    "operating_status": str | None,
+    "allocated_budget": float,
     "active_candidate_id": str | None,
     "active_indication": str | None,
+    "indication_locked": bool,
     "biomarker_strategy": dict | None,
-    "completed_studies": list[StudySummary],
-    "trial_designs": list[TrialDesignSummary],
-    "trial_results": list[TrialResultSummary],
-    "manufacturing_status": str,
-    "regulatory_interactions": list[RegulatoryNote],
-    "known_findings": list[str]
+    "candidate_summaries": list["CompoundSummary"],
+    "completed_studies": list["StudySummary"],
+    "trial_designs": list["TrialDesignSummary"],
+    "trial_results": list["TrialResultSummary"],
+    "manufacturing_status": str,         # unknown / concern / acceptable / failed
+    "nonclinical_safety_status": str,    # unknown / concern / acceptable / failed
+    "safety_database_status": str,       # unknown / concern / acceptable / failed
+    "regulatory_interactions": list["RegulatoryNote"],
+    "in_progress_work": list["WorkItemSummary"],
+    "gate_status": "GateStatus",
+    "blocking_issues": list[str],
+    "known_findings": list[str],
 }
 ```
 
-The agent must only see the observable slice.
+### 3.5 Candidate summaries
 
----
-
-## 6. Candidate and Series Objects
-
-The environment should support multiple compound proposals during lead stage, but only one nominated development candidate at a time for simplicity.
+Observed candidate properties are normalized scores on `[0, 1]`. They are noisy estimators of hidden truth and are the only values the agent may use for stage-gate logic.
 
 ```python
-Compound = {
+CompoundSummary = {
     "compound_id": str,
     "observed_profile": {
         "potency_estimate": float,
         "selectivity_estimate": float,
-        "solubility_estimate": float,
-        "clearance_estimate": float,
         "bioavailability_estimate": float,
+        "clearance_estimate": float,
         "safety_margin_estimate": float,
-        "developability_estimate": float
+        "developability_estimate": float,
     },
-    "history": list[StudyReference]
+    "history": list[str],
+    "is_active": bool,
 }
 ```
 
-Observed values should be noisy estimators of hidden truth, with assay-specific noise.
-
----
-
-## 7. Portfolio Object
-
-The environment should support multiple programs concurrently.
+### 3.6 In-progress work
 
 ```python
-Program = {
+WorkItemSummary = {
+    "work_id": str,
     "program_id": str,
-    "modality": str,
-    "target_class": str,
-    "stage": str,
-    "active_candidate_id": str | None,
-    "active_indication": str | None,
-    "hidden_state": HiddenProgramState,
-    "observable_state": ObservableProgramState,
-    "status": str,   # active / paused / partnered / terminated / approved / failed
-    "booked_budget": float
+    "kind": str,
+    "workstream": str,          # discovery_or_preclinical / clinical_or_regulatory
+    "start_month": int,
+    "expected_end_month": int,
+    "reserved_cost": float,
+    "status": str,              # scheduled / completed / canceled
 }
 ```
 
-A `PortfolioState` should contain a dict of programs plus shared resources.
+### 3.7 Derived gate status
+
+```python
+GateStatus = {
+    "can_nominate_candidate": bool,
+    "can_mark_preclinical_ready": bool,
+    "can_file_IND": bool,
+    "can_start_phase1": bool,
+    "can_start_phase2": bool,
+    "can_start_phase3": bool,
+    "can_submit_NDA": bool,
+}
+```
+
+`blocking_issues` must explain why any `False` gate is false. All gate logic must be derivable from observable state only.
 
 ---
 
-## 8. Action API
+## 4. Public Action API
 
-The simulator should include following callable environment actions (that will be used by the agent as tools).
+### 4.0 `get_portfolio_state()`
 
-### 8.0 `get_portfolio_state()`
-
-Returns the full current portfolio-level observable state plus summaries for all programs.
+Returns the current `portfolio_observable_state`.
 
 No preconditions.
 
-### 8.1 `get_program_state(program_id)`
+### 4.1 `get_program_state(program_id)`
 
-Returns the full current observable state for one program.
-
-Preconditions:
-
-* `program_id` exists in portfolio
-
-### 8.2 `launch_program(target_class, modality, initial_budget)`
-
-Purpose: create a new program from a fresh idea/target family.
-
-Inputs:
-
-* `target_class`
-* `modality`
-* `initial_budget`
-
-Preconditions:
-
-* enough portfolio cash
-* active program count below `max_parallel_programs` unless another program is paused or terminated
-
-State transition:
-
-* new hidden world sampled independently from the same initial prior distribution (see Section 14), regardless of existing programs or the agent's choice of `target_class` / `modality` — the agent's inputs are labels, not levers on the hidden state
-* new observable program created at `idea` or `hit_series`
-* cash decreases by committed startup cost
-* elapsed months may increase slightly for team formation / setup
-
-Observation:
-
-* initial program brief
-* rough tractability notes
-* broad indication hypothesis set
-
-This action is important because the agent must sometimes choose between rescuing a weak incumbent program and starting a new one.
-
-### 8.3 `allocate_budget(program_allocations)`
-
-Purpose: explicitly distribute capital across programs.
-
-Inputs:
-
-* mapping `program_id -> budget_amount`
-
-Preconditions:
-
-* total allocated budget <= available cash
-* all program_ids valid
-
-State transition:
-
-* updates booked budget by program
-
-Observation:
-
-* allocation summary
-* estimated runway by program
-
-This may be implicit inside other actions in a minimal implementation, but an explicit allocator is preferred if the simulator is meant to demonstrate portfolio optimization difficulty.
-
-### 8.4 `optimize_candidate(program_id, objective_profile, budget, cycles)`
-
-Purpose: simulate an aggregated medicinal chemistry campaign.
-
-Inputs:
-
-* `objective_profile`: weights over potency, selectivity, PK, safety margin, developability
-* `budget`: cash allocated
-* `cycles`: number of chemistry cycles
+Returns the full `program_observable_state` for one program.
 
 Preconditions:
 
 * `program_id` exists
-* program stage in `{hit_series, lead_series}`
-* enough cash
+
+### 4.2 `get_available_actions(program_id=None, include_blocked=False)`
+
+Returns a legal action menu derived from the current state, not from stage alone.
+
+Output shape:
+
+```python
+ActionDescriptor = {
+    "action": str,
+    "program_id": str | None,
+    "required_args": list[str],
+    "action_class": str,  # instant / scheduled
+    "est_cost_range": tuple[float, float] | None,
+    "est_duration_range_months": tuple[int, int] | None,
+    "blocking_reasons": list[str],
+}
+```
+
+Rules:
+
+* if `include_blocked=False`, return only legal actions
+* if `include_blocked=True`, also return blocked actions with explicit reasons
+
+This action is the canonical way for an agent to inspect the currently valid decision menu.
+
+### 4.3 `launch_program(opportunity_id, initial_budget)`
+
+Purpose: instantiate a new program from one visible opportunity.
+
+Preconditions:
+
+* `opportunity_id` is currently visible
+* `initial_budget > 0`
+* `initial_budget <= unallocated_cash`
+* the number of nonterminal programs with `operating_status == "active"` is below `max_parallel_programs`
 
 State transition:
 
-* cash decreases
-* elapsed months increase
-* current series is modified or a new candidate proposal is generated
-* observed candidate profiles updated
+* sample one hidden program state from the opportunity's prior family
+* create a new program at `stage == "hit_series"`
+* set `operating_status = "active"`
+* transfer `initial_budget` from `unallocated_cash` to the new program's `allocated_budget`
+* create an initial candidate list for the hit series
+* remove the chosen opportunity from the visible pool
+* sample one replacement opportunity immediately
 
 Observation:
 
-* list of candidate profiles with changed observed properties
-* synthesis success/failure notes
-* campaign tradeoff summary
+* new program summary
+* initial candidate summaries
+* opportunity-to-program launch note
 
-Key dynamics:
+### 4.4 `allocate_budget(program_allocations)`
 
-* property improvements should be correlated and antagonistic
-* e.g. potency gain may worsen clearance or formulation risk
-* diminishing returns should occur after repeated cycles
+Purpose: set absolute target budgets for active or paused nonterminal programs.
 
-### 8.5 `pause_program(program_id)`
+Inputs:
+
+* partial mapping `program_id -> target_allocated_budget`
+
+Preconditions:
+
+* all `program_id` values exist and are nonterminal
+* all target budgets are nonnegative
+* after applying the requested updates and leaving all unspecified program budgets unchanged, total allocated budget across all nonterminal programs is `<= cash_on_hand`
+
+State transition:
+
+* update each listed program's `allocated_budget`
+* update `unallocated_cash` so the invariant on portfolio cash still holds
+
+Observation:
+
+* new portfolio allocation summary
+* runway estimate by program
+
+### 4.5 `pause_program(program_id)`
 
 Preconditions:
 
 * `program_id` exists
-* program status == `active`
+* program stage is nonterminal
+* `operating_status == "active"`
 
 State transition:
 
-* program status -> `paused`
-* burn rate decreases
-* elapsed time continues to accumulate against the global time budget
+* `operating_status -> "paused"`
+* in-flight work continues unchanged
 
 Observation:
 
-* pause confirmation and carrying-cost summary
+* pause confirmation
 
-### 8.6 `resume_program(program_id)`
+### 4.6 `resume_program(program_id)`
 
 Preconditions:
 
 * `program_id` exists
-* program status == `paused`
-* enough resources to resume
+* program stage is nonterminal
+* `operating_status == "paused"`
+* resuming the program would not violate `max_parallel_programs`
 
 State transition:
 
-* program status -> `active`
+* `operating_status -> "active"`
 
 Observation:
 
 * resume confirmation
 
-### 8.7 `generate_preclinical_evidence(program_id, candidate_id, package_type)`
+### 4.7 `terminate_program(program_id, reason=None)`
+
+This is the only public termination action.
+
+Preconditions:
+
+* `program_id` exists
+* program stage is nonterminal
+
+State transition:
+
+* cancel all in-flight work for that program
+* return remaining `allocated_budget` to `unallocated_cash`
+* set `allocated_budget = 0`
+* set `stage = "terminated"`
+* set `operating_status = None`
+
+Observation:
+
+* termination confirmation
+* canceled work summary
+* budget returned to the portfolio
+
+### 4.8 `advance_time(months=None, to_next_event=False)`
+
+Purpose: progress the simulation clock and resolve completed work.
+
+Preconditions:
+
+* exactly one of `months` or `to_next_event=True` must be supplied
+* if `months` is supplied, it must be a positive integer
+
+State transition:
+
+* advance `elapsed_months`
+* process all event-queue items whose `expected_end_month <= elapsed_months`
+* complete those work items in deterministic order by `(expected_end_month, work_id)`
+* append resulting studies, trial results, regulatory notes, and stage transitions
+* if `elapsed_months` reaches `time_budget_months`, abandon any remaining in-flight work
+
+Observation:
+
+* list of completed work outputs
+* stage transition summaries
+* updated portfolio clock
+
+### 4.9 `optimize_candidate(program_id, objective_profile, budget, cycles)`
+
+Purpose: simulate one medicinal chemistry campaign.
+
+Action class: `scheduled`
+
+Inputs:
+
+* `objective_profile`: weights over potency, selectivity, PK, safety margin, and developability
+* `budget`: explicit campaign spend
+* `cycles`: positive integer
+
+Preconditions:
+
+* program exists
+* program `operating_status == "active"`
+* stage in `{"hit_series", "lead_series"}`
+* `budget > 0`
+* `budget <= allocated_budget`
+* no other active `discovery_or_preclinical` work item exists for that program
+
+State transition at scheduling time:
+
+* deduct `budget` from `allocated_budget`
+* deduct `budget` from `cash_on_hand`
+* create one discovery/preclinical work item
+
+Completion behavior:
+
+* mutate the current series and optionally generate new compounds
+* update observed candidate profiles with correlated tradeoffs
+* apply diminishing returns for repeated campaigns
+* if the program is still in `hit_series` and any candidate now satisfies the lead-entry threshold, advance stage to `lead_series`
+
+Observation on completion:
+
+* updated candidate summaries
+* campaign tradeoff memo
+
+### 4.10 `generate_preclinical_evidence(program_id, candidate_id, package_type)`
 
 Package types:
 
 * `exploratory`
 * `translational`
-* `IND-enabling`
+* `IND_enabling`
+
+Action class: `scheduled`
 
 Preconditions:
 
-* candidate exists
-* package-type-specific stage requirements
-* enough cash
+* program exists and is active
+* `candidate_id` exists in the program
+* no other active `discovery_or_preclinical` work item exists for that program
+* enough `allocated_budget` for the package cost
 
-State transition:
+Stage requirements:
 
-* new studies appended
-* elapsed months increase
-* cash decreases
-* may change manufacturing status if package includes developability work
+* `exploratory`: stage in `{"hit_series", "lead_series"}`
+* `translational`: stage in `{"lead_series", "development_candidate"}`
+* `IND_enabling`: stage == `"development_candidate"` and `active_indication is not None`
 
-Observation:
+Completion behavior:
+
+* append one package summary to `completed_studies`
+* update `manufacturing_status` and `nonclinical_safety_status`
+* update `known_findings`
+
+Observation on completion:
 
 * efficacy model outputs
-* ADME data
+* ADME summaries
 * tox findings
-* PK summaries
-* biomarker tractability observations
-* formulation notes
+* biomarker tractability notes
+* formulation/process notes
 
-Package-specific behavior:
+### 4.11 `run_additional_study(program_id, study_type, parameters)`
 
-`exploratory`:
+Purpose: gather narrower information without stage advancement.
 
-* moderate cost, moderate time
-* broad but noisy signal
-* used in hit/lead stage
+Action class: `scheduled`
 
-`translational`:
+Allowed study types by stage:
 
-* stronger PK/PD and biomarker readout
-* indication-contextual
-* informs biomarker strategy and population selection
-
-`IND-enabling`:
-
-* GLP-like tox, safety pharmacology, formulation/process package
-* may produce hard blockers or acceptable safety margin
-
-### 8.8 `run_additional_study(program_id, study_type, parameters)`
-
-Purpose: gather more information at the current stage without advancing. This allows the agent to reduce uncertainty before committing to the next stage gate.
-
-Available study types vary by stage:
-
-**hit_series / lead_series:**
-* `secondary_assay` — re-test potency or selectivity with a different assay
-* `alternate_scaffold` — explore a backup chemical series
-* `formulation_screen` — early assessment of formulation feasibility
-* `off_target_panel` — broader selectivity profiling
-
-**development_candidate:**
-* `additional_tox_species` — run tox in a second animal model
-* `biomarker_validation` — test biomarker hypothesis in a relevant system
-* `pk_bridging_study` — additional PK characterization (e.g., food effect, formulation comparison)
-* `mechanism_confirmation` — target engagement or pathway modulation study
-
-**IND_cleared / phaseX_complete:**
-* `dose_finding_substudy` — additional PK/PD modeling from existing data
-* `biomarker_retrospective` — reanalyze trial data with biomarker stratification
-* `external_data_analysis` — analyze published or real-world evidence for indication support
-
-Preconditions:
-* `program_id` exists and is active
-* `study_type` is valid for the current stage
-* enough cash
-
-State transition:
-* cash decreases (lower cost than stage-advancing actions)
-* elapsed months increase (shorter duration than stage-advancing actions)
-* new study results appended to completed_studies
-
-Observation:
-* study-specific results with measurement noise
-* may update observed candidate profile or known_findings
-
-Key dynamics:
-* additional studies have diminishing returns — repeating the same study type yields less new information
-* results may confirm, contradict, or be ambiguous relative to prior evidence
-
-### 8.9 `choose_indication(program_id, candidate_id, indication, biomarker_strategy=None)`
+* `hit_series` / `lead_series`
+  * `secondary_assay`
+  * `alternate_scaffold`
+  * `formulation_screen`
+  * `off_target_panel`
+* `development_candidate`
+  * `additional_tox_species`
+  * `biomarker_validation`
+  * `pk_bridging_study`
+  * `mechanism_confirmation`
+* `IND_cleared` / `phase1_complete` / `phase2_complete` / `phase3_complete`
+  * `dose_finding_substudy`
+  * `biomarker_retrospective`
+  * `external_data_analysis`
 
 Preconditions:
 
-* stage in `{lead_series, development_candidate}`
-* candidate exists
+* program exists and is active
+* stage supports the requested `study_type`
+* enough `allocated_budget`
+* no other active `discovery_or_preclinical` work item exists for that program
+
+Completion behavior:
+
+* append one `StudySummary`
+* optionally update candidate summaries, biomarker strategy support, manufacturing status, or safety status
+* repeated use of the same study type yields diminishing informational gain
+
+Observation on completion:
+
+* study-specific output with measurement noise
+
+### 4.12 `choose_indication(program_id, candidate_id, indication, biomarker_strategy=None)`
+
+Action class: `instant`
+
+Preconditions:
+
+* program exists and is active
+* `candidate_id` exists
+* stage in `{"lead_series", "development_candidate", "preclinical_ready", "IND_cleared", "phase1_complete"}`
+* `indication_locked == False`
+* no active `clinical_or_regulatory` work item exists for that program
 
 State transition:
 
-* active indication locked unless later changed with penalty
-* active biomarker strategy set or updated
-* downstream trial and market assumptions instantiated
+* set `active_candidate_id = candidate_id`
+* set or replace `active_indication`
+* set or replace `biomarker_strategy`
+
+If the indication changes after nomination:
+
+* mark all prior translational package outputs as stale for gate purposes
+* invalidate all stored `phase2` and `phase3` trial designs
+* append blocking issue `indication_changed_requires_revalidation`
+* set `indication_locked = False`
 
 Observation:
 
 * indication profile summary
-* expected enrollment difficulty range
-* expected endpoint families
-* market size estimate range
-* standard of care burden
+* enrollment difficulty range
+* endpoint family suggestions
+* market size range
 
-Changing indication later should incur:
+### 4.13 `nominate_candidate(program_id, candidate_id)`
 
-* time penalty
-* some evidence devaluation
-* protocol redesign requirements
-
-### 8.10 `nominate_candidate(program_id, candidate_id)`
+Action class: `instant`
 
 Preconditions:
 
-* stage == `lead_series`
-* candidate meets minimal observed thresholds
-* at least one exploratory or translational package complete
-* active indication selected
+* program exists and is active
+* stage == `"lead_series"`
+* `candidate_id` exists
+* `gate_status["can_nominate_candidate"] == True`
 
 State transition:
 
-* stage -> `development_candidate`
-* active candidate fixed
+* set `active_candidate_id = candidate_id`
+* set `stage = "development_candidate"`
 
 Observation:
 
-* nomination memo summary
-* identified development risks
+* nomination memo
+* key development risks
 
-### 8.11 `design_clinical_trial(program_id, phase, population_definition, endpoint, comparator, dose_strategy, duration, sample_size, enrichment_strategy=None)`
+### 4.14 `design_clinical_trial(program_id, phase, population_definition, endpoint, comparator, dose_strategy, duration, sample_size, enrichment_strategy=None)`
+
+Action class: `instant`
 
 Phases:
 
@@ -611,71 +720,477 @@ Phases:
 
 Preconditions:
 
-* candidate nominated
-* indication selected
-* stage compatible with phase
+* program exists and is active
+* `active_candidate_id is not None`
+* `active_indication is not None`
+* enough `allocated_budget` for the trial-design fee
+* stage is compatible with the requested phase:
+  * `phase1`: stage in `{"development_candidate", "preclinical_ready"}`
+  * `phase2`: stage in `{"IND_cleared", "phase1_complete"}`
+  * `phase3`: stage in `{"phase2_complete"}`
 
 State transition:
 
-* trial design object created
+* deduct the trial-design fee from `allocated_budget`
+* deduct the trial-design fee from `cash_on_hand`
+* create or replace the stored design object for that phase
+* compute design validity and planning estimates from observable state only
+
+Required validity conditions:
+
+* all required arguments are present
+* `sample_size > 0`
+* `duration > 0`
+* the endpoint is stage-appropriate
+* the dose strategy is non-empty
+
+Additional derived flags:
+
+* a valid `phase1` design sets `protocol_complete = True`
+* a valid `phase1` design sets `supports_starting_dose_rationale = True` only if an `IND_enabling` package exists and `nonclinical_safety_status != "failed"`
 
 Observation:
 
 * projected cost
-* projected duration
+* projected duration range
 * projected enrollment rate
 * estimated power range
 * interpretability score
 * regulatory credibility score
 
-This tool should not reveal true future outcome probability exactly. It may provide noisy planning estimates.
+### 4.15 `advance_program(program_id, action)`
 
-### 8.12 `advance_program(program_id, action)`
+Use this single function for nonterminal lifecycle advancement. Allowed actions:
 
-Allowed actions:
-
-* `preclinical_ready`
+* `mark_preclinical_ready`
 * `file_IND`
 * `start_phase1`
 * `start_phase2`
 * `start_phase3`
 * `submit_NDA`
-* `request_approval_decision`
-* `terminate`
 
-This function exists to enforce explicit stage transitions and hard dependencies.
+#### `mark_preclinical_ready`
 
-For `start_phaseX`, a valid trial design must already exist. Starting a phase is the agent's resource-commitment decision. Once started, the trial enters an `in_progress` state and runs for its sampled duration. Upon completion, the simulator automatically executes the trial using the hidden state and trial design, produces observable results, and advances the program stage to `phaseX_complete`. The agent does not explicitly choose to complete a trial — completion is an environment consequence of starting one and time elapsing.
-
-If the agent takes other actions while a trial is in progress, those actions' time costs contribute toward the trial's remaining duration (see Section 12.1 on parallel activity).
-
-`request_approval_decision` requires `submitted` state.
-
-### 8.13 `request_regulatory_feedback(program_id, question_set)`
+Action class: `instant`
 
 Preconditions:
 
-* stage >= `development_candidate`
-* enough cash/time
+* stage == `"development_candidate"`
+* `gate_status["can_mark_preclinical_ready"] == True`
+
+Transition:
+
+* `stage = "preclinical_ready"`
+
+#### `file_IND`
+
+Action class: `scheduled`
+
+Preconditions:
+
+* stage == `"preclinical_ready"`
+* `gate_status["can_file_IND"] == True`
+* no active `clinical_or_regulatory` work item exists for that program
+* enough `allocated_budget`
+
+Transition at scheduling time:
+
+* deduct submission cost
+* create regulatory work item
+* `stage = "ind_under_review"`
+
+Completion behavior:
+
+* regulator review uses the hidden state plus the submitted package
+* if accepted, `stage = "IND_cleared"`
+* if rejected, `stage = "failed"`
+* append one regulatory note
+
+#### `start_phase1`
+
+Action class: `scheduled`
+
+Preconditions:
+
+* stage == `"IND_cleared"`
+* `gate_status["can_start_phase1"] == True`
+* no active `clinical_or_regulatory` work item exists for that program
+* enough `allocated_budget`
+
+Transition at scheduling time:
+
+* deduct trial cost
+* create clinical work item
+* `stage = "phase1_in_progress"`
+
+Completion behavior:
+
+* generate trial results
+* if catastrophic safety failure occurs, `stage = "failed"`
+* otherwise `stage = "phase1_complete"`
+
+#### `start_phase2`
+
+Action class: `scheduled`
+
+Preconditions:
+
+* stage == `"phase1_complete"`
+* `gate_status["can_start_phase2"] == True`
+* no active `clinical_or_regulatory` work item exists for that program
+* enough `allocated_budget`
+
+Transition at scheduling time:
+
+* deduct trial cost
+* create clinical work item
+* set `indication_locked = True`
+* `stage = "phase2_in_progress"`
+
+Completion behavior:
+
+* generate trial results
+* if catastrophic failure occurs, `stage = "failed"`
+* otherwise `stage = "phase2_complete"`
+
+#### `start_phase3`
+
+Action class: `scheduled`
+
+Preconditions:
+
+* stage == `"phase2_complete"`
+* `gate_status["can_start_phase3"] == True`
+* no active `clinical_or_regulatory` work item exists for that program
+* enough `allocated_budget`
+
+Transition at scheduling time:
+
+* deduct trial cost
+* create clinical work item
+* `stage = "phase3_in_progress"`
+
+Completion behavior:
+
+* generate trial results
+* if catastrophic failure occurs, `stage = "failed"`
+* otherwise `stage = "phase3_complete"`
+
+#### `submit_NDA`
+
+Action class: `scheduled`
+
+Preconditions:
+
+* stage == `"phase3_complete"`
+* `gate_status["can_submit_NDA"] == True`
+* no active `clinical_or_regulatory` work item exists for that program
+* enough `allocated_budget`
+
+Transition at scheduling time:
+
+* deduct submission cost
+* create regulatory work item
+* `stage = "nda_under_review"`
+
+Completion behavior:
+
+* regulator review uses the hidden state plus the full package
+* if approved, `stage = "approved"`
+* if rejected, `stage = "failed"`
+* append one regulatory note
+
+### 4.16 `request_regulatory_feedback(program_id, question_set)`
+
+Action class: `instant`
+
+Preconditions:
+
+* program exists and is active
+* stage in `{"development_candidate", "preclinical_ready", "IND_cleared", "phase1_complete", "phase2_complete", "phase3_complete"}`
+* enough `allocated_budget` for the advisory fee
+
+State transition:
+
+* deduct the advisory fee from `allocated_budget`
+* deduct the advisory fee from `cash_on_hand`
+* append one `RegulatoryNote`
 
 Observation:
 
 * regulator minutes summary
 * comments on endpoint acceptability, biomarker use, safety database expectations, surrogate plausibility, or label scope
 
-The output should be informative but not omniscient.
+The output should be informative but never omniscient.
 
 ---
 
-## 9. Trial Execution Model
+## 5. Time, Cost, And Budget Model
 
-The most important part of the simulator is how trial outcomes are generated.
+### 5.1 Budget semantics
 
-### 9.1 Patient population generation
+Cash is shared at the portfolio level. Programs receive explicit `allocated_budget`. Spending always reduces both:
 
-When a trial is completed, instantiate a virtual patient cohort from the current active indication and trial population definition.
+* program `allocated_budget`
+* portfolio `cash_on_hand`
 
-Each patient should have latent variables sampled from indication-specific distributions:
+Unused program budget is not spent. It remains part of `cash_on_hand` and can be reassigned by `allocate_budget(...)`.
+
+### 5.2 Cost and duration behavior
+
+For the minimal implementation:
+
+* costs should be deterministic functions of action type and explicit inputs
+* durations may depend on action type, trial design, and hidden operational variables
+
+Suggested baseline cost bands for validation:
+
+```python
+cost_bands = {
+    "optimize_candidate": (2e6, 6e6),
+    "exploratory_preclinical": (1e6, 3e6),
+    "translational_preclinical": (2e6, 5e6),
+    "IND_enabling": (8e6, 20e6),
+    "design_trial": (0.2e6, 1e6),
+    "phase1": (5e6, 20e6),
+    "phase2": (20e6, 80e6),
+    "phase3": (80e6, 300e6),
+    "regulatory_submission": (2e6, 10e6),
+}
+```
+
+Suggested baseline duration bands in months:
+
+```python
+duration_bands = {
+    "optimize_candidate": (3, 9),
+    "exploratory_preclinical": (2, 5),
+    "translational_preclinical": (4, 8),
+    "IND_enabling": (6, 12),
+    "phase1": (6, 12),
+    "phase2": (12, 24),
+    "phase3": (18, 48),
+    "regulatory_review": (6, 12),
+}
+```
+
+Exact values should be indication- and design-dependent.
+
+### 5.3 Max parallel programs
+
+`max_parallel_programs` constrains the number of nonterminal programs that may have `operating_status == "active"` at the same time. Paused programs do not count against the cap.
+
+---
+
+## 6. Exact Gate Rules
+
+All gates must be computed from observable state only.
+
+### 6.1 Default observed thresholds
+
+Use normalized observed thresholds for the minimal implementation.
+
+```python
+DEFAULT_THRESHOLDS = {
+    "lead_entry": {
+        "potency_estimate": 0.45,
+        "selectivity_estimate": 0.40,
+        "bioavailability_estimate": 0.35,
+        "safety_margin_estimate": 0.35,
+    },
+    "nomination": {
+        "potency_estimate": 0.60,
+        "selectivity_estimate": 0.55,
+        "bioavailability_estimate": 0.50,
+        "safety_margin_estimate": 0.55,
+        "developability_estimate": 0.50,
+    },
+}
+```
+
+These thresholds may be configurable by modality, but the default implementation should start here.
+
+### 6.2 Derived evidence flags
+
+```python
+has_exploratory_package = any(
+    study.kind == "preclinical_package"
+    and study.package_type == "exploratory"
+    and study.candidate_id == active_candidate_id
+    and not study.get("stale_for_gate", False)
+    for study in completed_studies
+)
+
+has_translational_package = any(
+    study.kind == "preclinical_package"
+    and study.package_type == "translational"
+    and study.candidate_id == active_candidate_id
+    and not study.get("stale_for_gate", False)
+    for study in completed_studies
+)
+
+has_IND_enabling_package = any(
+    study.kind == "preclinical_package"
+    and study.package_type == "IND_enabling"
+    and study.candidate_id == active_candidate_id
+    for study in completed_studies
+)
+
+phase1_design_valid = latest_valid_design("phase1") is not None
+phase2_design_valid = latest_valid_design("phase2") is not None
+phase3_design_valid = latest_valid_design("phase3") is not None
+
+has_starting_dose_rationale = (
+    phase1_design_valid
+    and latest_valid_design("phase1")["supports_starting_dose_rationale"] is True
+)
+
+has_first_in_human_protocol = (
+    phase1_design_valid
+    and latest_valid_design("phase1")["protocol_complete"] is True
+)
+
+has_recommended_dose = any(
+    result["phase"] == "phase1"
+    and result["recommended_dose_supported"] is True
+    for result in trial_results
+) or any(
+    study["study_type"] == "dose_finding_substudy"
+    and study["recommended_dose_supported"] is True
+    for study in completed_studies
+)
+
+has_pivotal_package = any(
+    result["phase"] == "phase3"
+    and result["registrational_support"] in {"pivotal", "surrogate_acceptable"}
+    for result in trial_results
+)
+```
+
+### 6.3 Candidate threshold checks
+
+For a candidate `c`:
+
+```python
+meets_lead_entry_threshold(c) = (
+    c.potency_estimate >= 0.45
+    and c.selectivity_estimate >= 0.40
+    and c.bioavailability_estimate >= 0.35
+    and c.safety_margin_estimate >= 0.35
+)
+
+meets_nomination_threshold(c) = (
+    c.potency_estimate >= 0.60
+    and c.selectivity_estimate >= 0.55
+    and c.bioavailability_estimate >= 0.50
+    and c.safety_margin_estimate >= 0.55
+    and c.developability_estimate >= 0.50
+)
+```
+
+### 6.4 Gate formulas
+
+```python
+can_nominate_candidate = (
+    stage == "lead_series"
+    and active_candidate_id is not None
+    and active_indication is not None
+    and meets_nomination_threshold(active_candidate)
+    and (has_exploratory_package or has_translational_package)
+    and manufacturing_status != "failed"
+    and nonclinical_safety_status != "failed"
+    and "indication_changed_requires_revalidation" not in blocking_issues
+)
+
+can_mark_preclinical_ready = (
+    stage == "development_candidate"
+    and active_candidate_id is not None
+    and active_indication is not None
+    and has_IND_enabling_package
+    and manufacturing_status == "acceptable"
+    and nonclinical_safety_status == "acceptable"
+)
+
+can_file_IND = (
+    stage == "preclinical_ready"
+    and has_IND_enabling_package
+    and phase1_design_valid
+    and has_starting_dose_rationale
+    and has_first_in_human_protocol
+    and manufacturing_status == "acceptable"
+    and nonclinical_safety_status == "acceptable"
+)
+
+can_start_phase1 = (
+    stage == "IND_cleared"
+    and phase1_design_valid
+)
+
+can_start_phase2 = (
+    stage == "phase1_complete"
+    and phase2_design_valid
+    and has_recommended_dose
+    and safety_database_status != "failed"
+)
+
+can_start_phase3 = (
+    stage == "phase2_complete"
+    and phase3_design_valid
+    and indication_locked is True
+    and safety_database_status != "failed"
+)
+
+can_submit_NDA = (
+    stage == "phase3_complete"
+    and has_pivotal_package
+    and manufacturing_status == "acceptable"
+    and safety_database_status == "acceptable"
+)
+```
+
+### 6.5 Blocking issue generation
+
+`blocking_issues` must be regenerated after every state-changing action. At minimum, use these canonical issue strings when applicable:
+
+```python
+CANONICAL_BLOCKING_ISSUES = [
+    "program_paused",
+    "no_active_candidate",
+    "no_active_indication",
+    "candidate_below_nomination_threshold",
+    "missing_exploratory_or_translational_package",
+    "missing_IND_enabling_package",
+    "manufacturing_not_acceptable",
+    "nonclinical_safety_not_acceptable",
+    "missing_valid_phase1_design",
+    "missing_starting_dose_rationale",
+    "missing_first_in_human_protocol",
+    "missing_recommended_dose",
+    "missing_valid_phase2_design",
+    "missing_valid_phase3_design",
+    "indication_not_locked",
+    "missing_pivotal_package",
+    "safety_database_not_acceptable",
+    "indication_changed_requires_revalidation",
+    "clinical_or_regulatory_work_already_in_progress",
+    "discovery_or_preclinical_work_already_in_progress",
+    "insufficient_allocated_budget",
+]
+```
+
+Hard blockers should map to `manufacturing_status == "failed"`, `nonclinical_safety_status == "failed"`, `safety_database_status == "failed"`, or terminal `stage == "failed"`.
+
+Additional studies may clear blockers only by updating those observable statuses or by appending new evidence that changes the derived gate flags.
+
+---
+
+## 7. Trial Execution Model
+
+The clinical simulator must generate outcomes from shared hidden causes rather than isolated coin flips.
+
+### 7.1 Virtual patient cohort
+
+When a phase trial completes, instantiate a cohort:
 
 ```python
 Patient = {
@@ -685,216 +1200,123 @@ Patient = {
     "comorbidity_burden": float,
     "adherence": float,
     "pk_multiplier": float,
-    "placebo_susceptibility": float
+    "placebo_susceptibility": float,
 }
 ```
 
-### 9.2 Exposure model
+The cohort distribution depends on:
 
-Observed exposure should depend on:
+* active indication
+* trial population definition
+* enrichment strategy
+* hidden responder fraction
+* disease heterogeneity
+
+### 7.2 Exposure model
+
+Observed exposure must depend on:
 
 * dose strategy
-* candidate hidden PK
-* clinical exposure variability
+* hidden PK
+* exposure variability
 * patient adherence
 * patient PK multiplier
 
-### 9.3 Efficacy model
+### 7.3 Efficacy model
 
-For each patient, treatment effect should be generated as:
+For each patient:
 
 ```text
-effect = base_effect
+effect = effect_size_base
        * target_validity
        * f(exposure)
        * responder_indicator
-       * g(disease_stage, subtype)
+       * g(subtype, population_definition, biomarker_alignment)
        * (1 - pathway_redundancy)
-       + noise
+       + endpoint_noise
 ```
 
-Where:
+### 7.4 Safety model
 
-* `responder_indicator` is sampled based on true responder fraction and subtype/biomarker alignment
-* `noise` depends on endpoint type and disease heterogeneity
-
-### 9.4 Safety model
-
-Adverse event probability should depend on:
+Adverse-event probability must depend on:
 
 * exposure
 * therapeutic window
 * off-target liability
-* population comorbidity burden
+* comorbidity burden
 * trial duration
 
-### 9.5 Endpoint readout
+### 7.5 Endpoint families
 
-Different endpoint families should have different noise models:
+Support at least:
 
-* objective biomarker endpoint: lower variance, lower clinical meaning
-* symptom score: higher placebo noise
-* survival/event endpoint: censoring and duration dependence
-* binary response endpoint: thresholding noise
+* objective biomarker endpoint
+* symptom score endpoint
+* survival or event endpoint
+* binary response endpoint
 
-### 9.6 Result summary
+Different endpoint families must have different noise behavior.
 
-`complete_phaseX` should output:
+### 7.6 Trial result summary
 
-* primary endpoint estimate
-* confidence interval / p-value equivalent
-* subgroup analyses
-* exposure-response summary
-* safety summary
-* dropout summary
-* top-line interpretation string
+Each completed trial should append one `TrialResultSummary` with at least:
 
-Subgroup analyses should be present but subject to multiple-testing-style ambiguity.
+```python
+TrialResultSummary = {
+    "phase": str,
+    "primary_endpoint_estimate": float,
+    "confidence_interval": tuple[float, float],
+    "p_value_equivalent": float,
+    "recommended_dose_supported": bool,
+    "subgroup_findings": list[str],
+    "exposure_response_summary": str,
+    "safety_summary": str,
+    "dropout_summary": str,
+    "registrational_support": str,  # none / supportive / pivotal / surrogate_acceptable
+    "topline_interpretation": str,
+}
+```
+
+`safety_database_status` must be updated from completed human trial results only.
 
 ---
 
-## 10. Observation Model and Informational Limits
+## 8. Observation Model And Informational Limits
 
-No tool should reveal hidden truth directly.
+No tool may reveal hidden truth directly.
 
-Permitted observation patterns:
+Permitted output patterns:
 
-* assay estimates with measurement noise
-* trial forecasts with uncertainty bands
-* regulatory feedback as textual guidance
-* summarized interpretations derived only from current evidence
+* noisy assay values
+* study summaries
+* trial planning estimates
+* trial outputs
+* regulatory guidance
+* derived gate flags and blocking issues
 
-Forbidden outputs:
+Forbidden output patterns:
 
-* exact probability of approval derived from hidden state
-* true efficacy coefficient
+* exact approval probability from hidden state
 * true responder fraction
-* explicit statements like “target invalid” unless justified by observed evidence and even then probabilistic
+* true effect-size coefficient
+* direct statements like `target_validity = 0.18`
 
-The simulator should preserve the following asymmetry:
+Required asymmetry:
 
-* success can become relatively interpretable when multiple evidence streams align
-* failure should often remain underdetermined
-
----
-
-## 11. Action Branching and Decision Menu Generation
-
-At every decision step, the simulator should be able to enumerate a plausible action menu for the agent. This menu should include both local and portfolio-level actions.
-
-Example decision menu at one timestep:
-
-```python
-[
-  {"action": "optimize_candidate", "program_id": "P1"},
-  {"action": "generate_preclinical_evidence", "program_id": "P1", "package_type": "translational"},
-  {"action": "nominate_candidate", "program_id": "P1"},
-  {"action": "pause_program", "program_id": "P1"},
-  {"action": "launch_program", "target_class": "GPCR", "modality": "small_molecule"},
-  {"action": "raise_capital"},
-  {"action": "terminate_program", "program_id": "P1"}
-]
-```
-
-This menu should be generated from current preconditions rather than hardcoded by stage alone.
-
-The agent should therefore face realistic branching:
-
-* exploit the current program
-* buy more information in the current program
-* stop funding the current program
-* start a second program
-* fund two programs suboptimally rather than one program fully
-* seek financing or partnership instead of scientific progress
-
-This is what makes the benchmark faithful to biotech reality.
-
-## 12. Time and Cost Model
-
-Every action consumes time and cash.
-
-### 12.1 Parallel activity
-
-Actions within the same program or across programs may run in parallel if the agent chooses to start them concurrently. When multiple actions overlap, elapsed time advances by the duration of the longest concurrent action, not the sum. Cash costs are always additive regardless of parallelism.
-
-For example, an agent could run IND-enabling tox studies and formulation work simultaneously within one program, or run a Phase I trial in one program while optimizing a candidate in another. The simulator should track per-action start and end times and resolve elapsed months accordingly.
-
-Actions that depend on each other's outputs (e.g., designing a trial requires a nominated candidate) cannot overlap — their preconditions enforce sequencing naturally.
-
-Suggested baseline action costs:
-
-```python
-costs = {
-    "optimize_candidate": (2e6, 6e6),
-    "exploratory_preclinical": (1e6, 3e6),
-    "translational_preclinical": (2e6, 5e6),
-    "IND_enabling": (8e6, 20e6),
-    "design_trial": (0.2e6, 1e6),
-    "phase1": (5e6, 20e6),
-    "phase2": (20e6, 80e6),
-    "phase3": (80e6, 300e6),
-    "regulatory_submission": (2e6, 10e6)
-}
-```
-
-Suggested baseline durations in months:
-
-```python
-durations = {
-    "optimize_candidate": (3, 9),
-    "exploratory_preclinical": (2, 5),
-    "translational_preclinical": (4, 8),
-    "IND_enabling": (6, 12),
-    "phase1": (6, 12),
-    "phase2": (12, 24),
-    "phase3": (18, 48),
-    "regulatory_review": (6, 12)
-}
-```
-
-Exact values should be indication- and design-dependent.
-
-If portfolio cash drops below zero at any point and no financing action is taken, the portfolio should force one of:
-
-* emergency termination of one or more programs
-* distressed financing with penalty
-* portfolio failure state
-
-The implementation should make clear that capital is a shared resource across programs, not a local property of one asset.
+* aligned evidence streams may make success look increasingly interpretable
+* failures should often remain causally ambiguous from the agent's perspective
 
 ---
 
-## 13. Reward Functions
+## 9. Opportunity Generation, Scenarios, And Failure Modes
 
-The primary reward is:
+### 9.1 Opportunity priors
 
-```
-R = N_approved / C_total
-```
+Opportunities must induce structured priors rather than IID lottery tickets. Different opportunities should shift expected biology quality, chemistry tractability, translatability, operational burden, and commercial headroom in meaningful ways.
 
-Where `N_approved` is the number of drugs that reach `approved` status and `C_total` is the total cash expended across all programs. This captures the efficiency of the portfolio: more approvals per dollar spent is better.
+### 9.2 Scenario presets
 
-The secondary endpoint is total elapsed time. Between two runs with equal primary reward, the one that completed faster is preferred.
-
-The simulator should report both metrics at termination.
-
----
-
-## 14. Initial World Generation
-
-At reset, sample a coherent hidden world from a parameterized prior.
-
-Important: hidden variables should not be independent. Sample from a structured prior with realistic correlations.
-
-Examples:
-
-* higher target validity tends to increase effect size base
-* higher pathway redundancy reduces realized effect size and subgroup breadth
-* poor biomarker observability tends to reduce enrichment success
-* higher off-target liability reduces therapeutic window
-* poor formulation/process properties should correlate with manufacturing risk
-
-To aid in initial state generation, the simulator should support preset scenario families:
+Support fixed-seed presets such as:
 
 * `clean_winner`
 * `dose_trap`
@@ -906,134 +1328,102 @@ To aid in initial state generation, the simulator should support preset scenario
 * `crowded_market`
 * `slow_enrollment`
 
-These are not to rig outcomes, but to make illustrative runs reproducible.
+These presets may control the initial opportunity deck, portfolio cash, and hidden prior families.
 
----
+### 9.3 Failure modes to preserve
 
-## 15. Failure Modes to Preserve
-
-A realistic toy simulator should be able to generate at least the following distinct failure modes:
+The simulator should be able to generate at least:
 
 1. target invalidity
 2. insufficient exposure in humans
 3. toxicity at biologically active dose
 4. wrong patient population
-5. endpoint too noisy / placebo heavy
+5. endpoint too noisy or placebo-heavy
 6. biomarker weak or misaligned
-7. formulation / CMC blocker
-8. enrollment too slow / cash exhaustion
-9. successful Phase II but failed Phase III due to smaller true effect
-10. submission failure due to evidence or manufacturing deficiencies
-11. successful drug but insufficient commercial viability (e.g., crowded market, tiny patient population, cost of goods too high)
+7. formulation or CMC blocker
+8. enrollment too slow or cash exhaustion
+9. positive Phase II but negative Phase III
+10. submission failure due to evidence or manufacturing deficiency
+11. approved drug with weak commercial outlook
 
-The same outward observation should sometimes map to multiple hidden causes.
+Commercial weakness should not block regulatory approval by itself. It should appear in reported metrics and program summaries, not as an approval gate.
 
 ---
 
-## 16. Example Minimal State Machine
+## 10. Metrics And Reporting
 
-```python
-ALLOWED_TRANSITIONS = {
-    "idea": ["hit_series"],
-    "hit_series": ["lead_series", "terminated"],
-    "lead_series": ["development_candidate", "terminated"],
-    "development_candidate": ["preclinical_ready", "terminated"],
-    "preclinical_ready": ["IND_cleared", "failed", "terminated"],
-    "IND_cleared": ["phase1_in_progress", "failed", "terminated"],
-    "phase1_in_progress": ["phase1_complete", "failed", "terminated"],
-    "phase1_complete": ["phase2_in_progress", "terminated", "failed"],
-    "phase2_in_progress": ["phase2_complete", "failed", "terminated"],
-    "phase2_complete": ["phase3_in_progress", "terminated", "failed"],
-    "phase3_in_progress": ["phase3_complete", "failed", "terminated"],
-    "phase3_complete": ["submitted", "failed", "terminated"],
-    "submitted": ["approved", "failed"],
-    "approved": [],
-    "failed": [],
-    "terminated": []
-}
+The simulator should report multiple outcome signals.
+
+### 10.1 Primary north-star score
+
+```text
+primary_score = N_approved / C_total
 ```
 
-Transitions from `phaseX_in_progress` to `phaseX_complete` are triggered automatically by the simulator when the trial duration elapses. All other transitions are agent-initiated.
+### 10.2 Required secondary reported metrics
+
+At environment termination, report at least:
+
+* `total_approvals`
+* `total_IND_filings`
+* `total_NDA_submissions`
+* `successful_phase2_count`
+* `successful_phase3_count`
+* `time_to_first_approval`
+* `total_elapsed_months`
+* `total_cost_spent`
+* `terminal_portfolio_status`
+* `commercially_weak_approval_count`
+
+### 10.3 Program-level summaries
+
+Each terminal program summary should report:
+
+* terminal stage
+* total spend
+* elapsed time since launch
+* last completed stage
+* key positive findings
+* key blocking or failure findings
+* commercial outlook label
 
 ---
 
-## 17. Implementation Guidance
+## 11. Implementation Guidance
 
-Recommended architecture:
+Recommended module split:
 
-* `world.py`: hidden state generation and transition logic
-* `program.py`: observable state, stage machine, resource accounting
-* `studies.py`: preclinical package generators
-* `trials.py`: clinical design and virtual patient simulation
-* `regulatory.py`: regulatory feedback and approval logic
-* `api.py`: agent-facing tool interface
-* `scenarios.py`: preset hidden-world seeds
+* `world.py`: hidden state generation, opportunity priors, scenario presets
+* `portfolio.py`: portfolio cash, opportunity pool, event queue, termination logic
+* `program.py`: program lifecycle state, gate computation, budget tracking
+* `studies.py`: preclinical packages and additional studies
+* `trials.py`: trial design validation and virtual patient simulation
+* `regulatory.py`: feedback, IND review, NDA review
+* `api.py`: agent-facing public actions
 
 Recommended implementation style:
 
-* dataclasses or pydantic models for state objects
-* deterministic reproducibility via seeded RNG
-* clear separation between hidden and observable state
-* every action returns both `observation` and `state_delta_summary`
-* enforce all preconditions at API boundary
+* dataclasses or pydantic models for all state objects
+* seeded RNG with deterministic replay
+* clean separation between hidden and observable state
+* a single gate-computation function used everywhere
+* strict precondition enforcement at the API boundary
+* a structured event queue for all scheduled work
 
 ---
 
-## 18. Minimal Example Action Sequence
+## 12. Deliverables For The Coding Agent
 
-A valid sequence should look like:
-
-```text
-get_program_state()
-optimize_candidate(...)
-generate_preclinical_evidence(candidate_id, 'exploratory')
-choose_indication(candidate_id, 'oncology_biomarker_defined')
-nominate_candidate(candidate_id)
-generate_preclinical_evidence(candidate_id, 'IND-enabling')
-advance_program('preclinical_ready')
-request_regulatory_feedback([...])
-advance_program('file_IND')
-design_clinical_trial('phase1', ...)
-advance_program('start_phase1')
-advance_program('complete_phase1')
-design_clinical_trial('phase2', ...)
-advance_program('start_phase2')
-advance_program('complete_phase2')
-...
-```
-
-An invalid sequence should fail clearly.
-
-Examples:
-
-* attempting `advance_program('file_IND')` before IND-enabling package complete
-* attempting `start_phase2` before Phase I results exist
-* attempting `nominate_candidate()` without indication selection
-* attempting `submit_NDA` without completed pivotal package
-
----
-
-## 19. Portfolio Policies to Preserve
-
-The simulator should support at least these qualitatively distinct rational policies:
-
-1. single-asset focus: invest deeply in one promising program
-2. barbell portfolio: keep one advanced asset and one exploratory backup
-3. kill-fast strategy: terminate weak programs early and relaunch often
-4. rescue strategy: spend on ambiguity-reducing studies before terminating
-5. partnering strategy: externalize one asset to fund another
-
-No single policy should dominate all seeded scenarios.
-
-This matters because the agent should learn that optimal action selection depends jointly on program evidence, remaining cash, and alternative opportunities.
-
-## 20. Deliverables for the Coding Agent
-
-The coding agent should produce:
+The implementation should produce:
 
 1. a runnable simulator environment
-2. an agent-facing Python API for the tools above
+2. an agent-facing Python API matching this spec
 3. scenario presets with fixed seeds
 4. a simple example policy agent
-5. logs showing state, observations, and stage transitions
-6. validation tests for precondition enforcement and stage graph correctness
+5. logs showing actions, event completions, observations, gate changes, and stage transitions
+6. validation tests for:
+   * stage graph correctness
+   * gate-rule correctness
+   * event-queue completion behavior
+   * budget accounting invariants
+   * observable-only action legality
