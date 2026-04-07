@@ -1,23 +1,20 @@
-# LLM Agent Harness Spec
+# Minimal Smolagents Harness Spec
 
 ## Purpose
 
-This spec defines the `agent/` product as an agentic harness for coding agents such as Codex and Claude Code.
+The `agent/` directory should be a very small outer-loop optimization harness built around:
 
-The harness exists to help a coding agent:
+- `smolagents`
+- an OpenRouter-backed model
+- one read-only helper file
+- one writable scratch pad file
+- one entrypoint script that evaluates and then invokes the agent
 
-- bootstrap against the simulator in [`simulator/`](../simulator/)
-- run episodes and benchmark sweeps
-- inspect observable outcomes and artifacts
-- edit an agent policy implementation
-- iterate toward higher reward
+The simulator remains the environment in [`simulator/`](../simulator/).
 
-This is not a spec for a fixed hand-authored portfolio policy by itself.
-It is a spec for the prompt, tool, evaluation, and policy-plug-in framework that lets a coding agent improve that policy over time.
+The harness exists only to help an LLM improve policy logic against that simulator.
 
-The simulator remains the environment of record.
-
-The north-star metric remains:
+The benchmark objective remains:
 
 ```text
 primary_score = N_approved / C_total
@@ -28,481 +25,246 @@ where:
 - `N_approved` is the number of approved programs before termination
 - `C_total` is total portfolio cash spent
 
----
-
-## 1. Product Definition
-
-The `agent/` directory should become a self-contained experimentation harness with four parts:
-
-1. prompt pack for Codex / Claude Code
-2. tool entrypoints for running and inspecting simulator episodes
-3. pluggable runtime policy code
-4. benchmark and experiment tracking utilities
-
-The harness should make it easy for a coding agent to answer:
-
-- what is the current baseline score?
-- what failure mode is hurting performance?
-- what policy change should be tried next?
-- did the change improve held-out performance?
+This spec is intentionally minimal for outer-loop optimization.
 
 ---
 
-## 2. Core Design Goal
+## 1. Minimal File Set
 
-The harness should optimize for fast iterative improvement by an external coding agent.
-
-That means it should be:
-
-- easy to start from a cold repo state
-- explicit about what files the coding agent should edit
-- explicit about what commands it should run
-- deterministic enough to compare changes across seeds
-- strict about the public simulator boundary during runtime evaluation
-
-The coding agent should not need to invent a workflow.
-The workflow should already be encoded in the harness.
-
----
-
-## 3. Users
-
-### 3.1 Primary user
-
-The primary user is a coding agent with:
-
-- shell access
-- file editing ability
-- ability to read and write code
-- ability to run repeated evaluations
-
-Examples:
-
-- Codex
-- Claude Code
-
-### 3.2 Secondary user
-
-A human researcher should also be able to:
-
-- run the same benchmark scripts
-- inspect experiment summaries
-- compare policies
-- override prompts or evaluation settings
-
----
-
-## 4. Harness Boundary
-
-### 4.1 What the harness may do
-
-The harness may:
-
-- call the public simulator API
-- read simulator-produced artifact bundles after a run completes
-- compare aggregate results across many runs
-- write policy code under `agent/`
-- write experiment summaries under `agent/`
-
-### 4.2 What the runtime policy must not do
-
-The runtime policy being evaluated must not:
-
-- access simulator hidden state directly
-- import private simulator internals to leak truth
-- use debug-only outputs
-- inspect current-run artifacts as part of decision making
-
-The evaluated runtime policy must act only from observable simulator outputs.
-
-### 4.3 Benchmark integrity rule
-
-The harness should treat `simulator/` as frozen during policy evaluation.
-
-The coding agent may read simulator code for understanding, but benchmark scripts should evaluate only changes under `agent/` unless the user explicitly asks to change simulator behavior.
-
----
-
-## 5. Required Directory Layout
-
-Recommended target structure:
+The harness should stay close to this layout:
 
 ```text
 agent/
   SPEC.md
-  README.md
-  prompts/
-    SYSTEM.md
-    BOOTSTRAP.md
-    ITERATE.md
-    ANALYZE.md
-    SHIP.md
-  policy/
-    __init__.py
-    interface.py
-    baseline.py
-    working.py
-    heuristics.py
-    scoring.py
-    memory.py
-  tools/
-    run_episode.py
-    benchmark.py
-    inspect_run.py
-    summarize_results.py
-    check_policy_boundary.py
-  experiments/
-    leaderboard.json
-    latest_summary.md
-    runs/
-  tests/
-    test_policy_interface.py
-    test_boundary.py
-    test_benchmark_smoke.py
+  SYSTEM_PROMPT.md
+  policy_helpers.py
+  scratch.py
+  run_agent.py
 ```
 
-The exact filenames may vary, but the harness should clearly separate:
-
-- prompts
-- runtime policy code
-- executable tools
-- experiment outputs
-
----
-
-## 6. Prompt Pack
-
-The prompt pack should be first-class, not incidental.
-
-### 6.1 `SYSTEM.md`
-
-Defines the standing instructions for the coding agent.
-
-It should include:
-
-- goal: improve benchmark score
-- constraint: runtime policy must use only observable simulator state
-- workflow: evaluate, inspect, patch, re-evaluate
-- output discipline: record results after each experiment
-- anti-cheating rule: do not modify simulator to expose hidden truth
-
-### 6.2 `BOOTSTRAP.md`
-
-Used when starting from scratch.
-
-It should tell the coding agent to:
-
-1. run the baseline benchmark
-2. inspect score summaries
-3. inspect a small number of representative failed runs
-4. identify the biggest failure mode
-5. propose the smallest policy change likely to help
-
-### 6.3 `ITERATE.md`
-
-Used for the standard improvement loop.
-
-It should tell the coding agent to:
-
-1. compare current policy against baseline
-2. focus on one clear hypothesis at a time
-3. make a bounded code change
-4. rerun the benchmark slice
-5. log the result and next hypothesis
-
-### 6.4 `ANALYZE.md`
-
-Used when performance stagnates.
-
-It should emphasize:
-
-- stage-specific failure clustering
-- budget misallocation
-- poor trial design choices
-- over-persistence in weak programs
-- under-launching or over-launching
-
-### 6.5 `SHIP.md`
-
-Used when preparing a candidate best policy.
-
-It should require:
-
-- final benchmark run
-- summary vs baseline
-- known weaknesses
-- list of files changed
-
----
-
-## 7. Policy Plug-In Contract
-
-The harness should define a strict policy interface so benchmark tools do not depend on ad hoc code.
-
-### 7.1 Required interface
-
-The recommended interface is:
-
-```python
-class Policy:
-    def reset(self, run_context: dict) -> None: ...
-    def select_action(
-        self,
-        portfolio_state: dict,
-        program_states: dict[str, dict],
-        available_actions: list[dict],
-    ) -> dict: ...
-    def observe(self, action: dict, observation: dict) -> None: ...
-```
-
-### 7.2 Action output format
-
-The policy should return a structured action request like:
-
-```python
-{
-    "action": "launch_program",
-    "kwargs": {
-        "opportunity_id": "opp-001",
-        "initial_budget": 80000000.0,
-    },
-}
-```
-
-### 7.3 Policy input rules
-
-The benchmark harness should pass the policy only:
-
-- `get_portfolio_state()` output
-- `get_program_state(program_id)` outputs
-- `get_available_actions(...)` outputs
-
-The policy should not receive the simulator object directly if that would make boundary enforcement weaker.
-
----
-
-## 8. Required Tool Entry Points
-
-The harness should provide stable command-line entrypoints a coding agent can rely on.
-
-### 8.1 `run_episode`
-
-Run a single policy episode against one scenario and seed.
-
-Required inputs:
-
-- policy module or policy name
-- scenario preset
-- seed
-- optional max steps
-- optional output directory
-
-Required outputs:
-
-- primary score
-- approvals
-- spend
-- elapsed months
-- terminal summary
-- simulator artifact manifest
-- policy decision log location
-
-### 8.2 `benchmark`
-
-Run a policy over a fixed evaluation panel.
-
-Required features:
-
-- deterministic seed set
-- multiple scenario presets
-- JSON summary output
-- table/markdown summary output
-- comparison against baseline policy
-
-### 8.3 `inspect_run`
-
-Summarize one run for failure analysis.
-
-It should surface:
-
-- action timeline
-- stage progression by program
-- major blockers encountered
-- terminal outcomes
-- likely policy mistakes
-
-### 8.4 `summarize_results`
-
-Aggregate recent experiment outputs into:
-
-- leaderboard
-- latest best policy summary
-- notable regressions
-
-### 8.5 `check_policy_boundary`
-
-Static or runtime check that the evaluated policy does not import forbidden simulator internals.
-
----
-
-## 9. Evaluation Workflow
-
-The default coding-agent workflow should be:
-
-1. run baseline benchmark
-2. inspect failures
-3. edit policy code
-4. run a small smoke benchmark
-5. if improved, run the full benchmark panel
-6. update experiment log and leaderboard
-
-The harness should make this loop cheap.
-
-### 9.1 Smoke evaluation
-
-A small fast panel for iteration:
-
-- 1 to 2 seeds per scenario
-- a reduced scenario subset
-- quick enough for repeated use during development
-
-### 9.2 Full evaluation
-
-A slower comparison panel for claiming improvement.
-
-At minimum include:
-
-- `clean_winner`
-- `dose_trap`
-- `subgroup_drug`
-- `beautiful_biology_bad_molecule`
-- `good_molecule_wrong_target`
-- `operationally_doomed`
-- `regulatory_gray_zone`
-- `crowded_market`
-- `slow_enrollment`
-
----
-
-## 10. Experiment Logging
-
-Every benchmark run should produce a policy-side experiment record under `agent/experiments/`.
-
-At minimum record:
-
-- timestamp
-- git commit or workspace marker if available
-- policy name
-- benchmark panel used
-- aggregate metrics
-- comparison vs baseline
-- short hypothesis being tested
-- free-text notes on what changed
-
-The harness should maintain:
-
-- a machine-readable leaderboard
-- a human-readable latest summary
-
----
-
-## 11. Metrics
-
-### 11.1 Primary metric
+Optional generated outputs are allowed:
 
 ```text
-primary_score = N_approved / C_total
+agent/
+  results/
+  latest_run_summary.json
+  latest_run_summary.md
+  latest_comparison.json
 ```
 
-### 11.2 Required secondary metrics
+But the authored source of truth should remain only:
 
-The harness should report at least:
+- one system prompt
+- one read-only helper module
+- one writable policy-routing module
+- one orchestration script
+
+---
+
+## 2. Core Design
+
+The agent loop should work like this:
+
+- `run_agent.py` jumpstarts the simulations, the following is repeated N times:
+   - A `smolagents` agent using an OpenRouter model is started
+   - The agent reads:
+     - `SYSTEM_PROMPT.md`
+     - `policy_helpers.py`
+  - `run_agent.py` creates a fresh `DrugDevelopmentSimulator` from `simulator/api.py`
+  - The agent then drives that simulator step by step using the same public loop shape shown in `simulator/example_agent.py`
+  - At each step the agent will:
+    - Read observable state from `sim.get_portfolio_state()`, `sim.get_program_state(program_id)`, and `sim.get_available_actions(...)`
+    - Read and use helpers from `policy_helpers.py` to guide its decisions
+    - Edit the `scratch.py` file with any useful notes/helpers
+    - Choose one legal simulator API action to perform next
+    - Advance the simulation timestep with the public API
+    - End the simulation if time/budget runs out
+- The agent then summarizes the result of all simulator runs
+
+Note that the LLM does not own benchmarking.
+
+---
+
+## 3. Backend
+
+The backend should be `smolagents`, not Codex Desktop or Claude Code.
+
+### 3.1 Model source
+
+The model should be accessed through OpenRouter.
+
+The entrypoint should require:
+
+- `OPENROUTER_API_KEY` in the environment
+
+If `OPENROUTER_API_KEY` is missing, `run_agent.py` should fail fast with a clear error.
+
+### 3.2 Model selection
+
+`run_agent.py` should accept a model string argument, for example:
+
+- `--model`
+
+The value should be passed through to the OpenRouter-backed `smolagents` model configuration.
+
+### 3.3 Tooling stance
+
+The `smolagents` instance should be configured as narrowly as practical.
+
+Preferred tool surface:
+
+- file read
+- file write restricted to `agent/scratch.py`
+- optional simple note output
+
+Avoid:
+
+- arbitrary shell execution
+- arbitrary Python execution outside the harness
+- network tools beyond the LLM call itself
+- direct reads of simulator source or artifact files as live planning input
+
+The agent should behave like a controlled editor over `scratch.py` and a constrained consumer of the public simulator API, not a free-form autonomous shell user.
+
+---
+
+## 4. File Responsibilities
+
+### 4.1 `SYSTEM_PROMPT.md`
+
+This file is the standing instruction block passed to the `smolagents` agent.
+
+It should explain:
+
+- what the simulator is
+- what the optimization metric is
+- that the agent is improving a routing policy over observable simulator state
+- that only `agent/scratch.py` is writable
+- that `agent/policy_helpers.py` is read-only
+- that simulator interaction happens only through the public API in `simulator/api.py`
+- that `simulator/example_agent.py` shows the intended turn-taking pattern
+- that evaluation is run externally by `agent/run_agent.py`
+- that edits should be small and measurable
+
+
+### 4.2 `policy_helpers.py`
+
+This file is read-only.
+
+It should contain deterministic helper functions that the agent may inspect and use, but not edit.
+For starters and to jumpstart this file, let's put the following helpers:
+
+- ranking visible opportunities
+- ranking candidates within a program
+- checking common blocker patterns
+- scoring stage urgency
+- normalizing available actions
+- budget heuristics
+
+
+See sections belowfor an example
+
+`policy_helpers.py` should be:
+
+- deterministic
+- pure
+- side-effect free
+- observable-only
+
+It must not contain:
+
+- hidden-state access
+- filesystem writes
+- subprocess calls
+- network calls
+
+The outer loop should treat this file as part of the fixed substrate.
+
+### 4.3 `scratch.py`
+
+This file is the only intended optimization surface.
+
+It should contain the top-level policy routing logic that decides what to do next from observable simulator inputs.
+
+This file is writable by the `smolagents` agent.
+
+It should stay deterministic and should be limited to routing and action choice.
+
+### 4.4 `run_agent.py`
+
+This is the single entrypoint.
+
+It should:
+
+1. validate `OPENROUTER_API_KEY`
+2. evaluate the current policy over `N` deterministic runs
+3. write summary files
+4. launch the `smolagents` agent with the system prompt and relevant context, as well as relevant permission structure
+5. rerun the same evaluation panel
+6. write a before/after comparison
+
+This file owns:
+
+- simulation/agent orchestration
+- seed selection
+- scenario selection
+- summary generation
+- agent invocation
+
+---
+
+## 5. Runtime Boundary
+
+The evaluated policy must act only on observable simulator outputs from a live `DrugDevelopmentSimulator` instance in `simulator/api.py`.
+
+Allowed runtime inputs:
+
+- `sim.get_portfolio_state()`
+- `sim.get_program_state(program_id)`
+- `sim.get_available_actions(...)`
+- legal simulator action methods selected from the available-action menu
+- `sim.advance_time(...)`
+
+Forbidden runtime inputs:
+
+- simulator hidden state
+- internal simulator dataclasses
+- debug-only outputs
+- reading `simulator/*.py` or `simulator/artifacts/*` as live planning context during a run
+- current-run artifact files used as a live planning shortcut
+
+`simulator/example_agent.py` is the reference shape for this interaction loop.
+The runtime policy should be treated as a clean consumer of the public simulator API.
+
+---
+
+## 6. `policy_helpers.py` Should Be Read-Only
+
+This requirement is deliberate.
+
+`policy_helpers.py` should hold stable, reusable primitives so the outer-loop agent is not constantly rewriting low-level utilities.
+
+The harness should reinforce this in two ways:
+
+1. prompt-level instruction
+2. tool-level write restriction, if possible
+
+If file-level tool restriction is feasible, only `scratch.py` should be writable.
+
+## 7 Minimum output
+
+After `run_agent.py` finishes all simulations, it should summarize all runs via:
 
 - mean primary score
-- median primary score
-- total approvals
-- approvals per run
-- total spend
-- time to first approval
-- zero-approval run fraction
-- phase transition counts
-- approval rate by scenario preset
+- mean approvals
+- mean spend
+- zero-approval run count
+- mean elapsed months
+- scenario preset(s)
+- seed list
 
-### 11.3 Improvement test
+Also write a compact comparison file summarizing:
 
-A new policy should only be considered better if it beats the baseline on the agreed panel, not just on one favorite seed.
-
----
-
-## 12. Failure Analysis Expectations
-
-The harness should help the coding agent diagnose policy failures, not just emit a scalar score.
-
-Common categories to highlight:
-
-- failed to fund a promising program enough to reach the next milestone
-- over-invested in a weak program
-- advanced into expensive clinical work too early
-- failed to gather the right gate-clearing evidence
-- designed poor trials
-- underused pause or terminate
-- overused low-value studies
-- failed to launch enough opportunities
-
-Run-inspection tooling should summarize these patterns from observable traces and artifacts.
-
----
-
-## 13. Coding-Agent Guidance
-
-The harness should explicitly guide Codex / Claude Code toward productive behavior.
-
-Recommended standing guidance:
-
-- start with baseline measurement, not guesswork
-- change one policy hypothesis at a time
-- prefer small, testable edits
-- use smoke benchmarks during iteration
-- inspect concrete failed runs before broad refactors
-- do not tune only to one scenario
-- do not modify simulator scoring or hidden-state exposure
-
----
-
-## 14. Non-Goals
-
-The first version of the harness does not need:
-
-- reinforcement learning infrastructure
-- distributed hyperparameter search
-- fine-tuning pipelines
-- a web UI
-- multi-agent orchestration inside the runtime policy
-
-Those can come later if needed.
-
-The initial goal is a strong iterative coding-agent workflow around a pluggable policy.
-
----
-
-## 15. Deliverables
-
-The intended implementation of `agent/` should produce:
-
-1. a prompt pack for Codex / Claude Code
-2. a strict runtime policy interface
-3. a baseline policy
-4. a working policy slot for iterative edits
-5. CLI tools for episode runs, benchmarks, run inspection, and result summaries
-6. experiment logging and leaderboard files
-7. tests for policy interface, benchmark smoke runs, and boundary enforcement
-
-The important thing is that a coding agent can clone the workflow immediately:
-
-- read the prompt
-- run the benchmark
-- inspect the result
-- patch the policy
-- measure improvement
-
-without inventing the scaffolding from scratch.
+- baseline metrics
+- updated metrics
+- delta metrics

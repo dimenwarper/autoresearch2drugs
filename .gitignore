@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated agent harness outputs
+agent/results/
+agent/latest_run_summary.json
+agent/latest_run_summary.md
+agent/latest_comparison.json
+
+# Generated simulator artifacts
+simulator/artifacts/
